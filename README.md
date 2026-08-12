@@ -1,7 +1,9 @@
 # SC-200 SOC Lab: Defense-in-Depth Kill-Chain Interruption
  
 **A Microsoft Sentinel + Entra ID + Azure detection engineering lab demonstrating containment at multiple independent layers of an identity-to-endpoint attack chain.**
- 
+
+ **Architect:** Joshua Adeleye  
+**Credentials:** [LinkedIn Profile](https://www.linkedin.com/in/joshuaadeleye) | [Microsoft SC-900 Certification](https://learn.microsoft.com/api/credentials/share/en-us/JoshuaAdeleye-9770/FB7604464D61E680)
 ---
  
 ## Project Summary
