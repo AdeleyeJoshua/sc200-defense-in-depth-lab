@@ -29,7 +29,7 @@ A real SOC doesn't get one shot at the end of a kill chain. Every layer — iden
  
 ## Architecture Overview
  
-![Architecture overview](diagrams/architecture-v2.png)
+![Architecture overview](diagrams/architecture-v2.jpg)
  
 ---
  
