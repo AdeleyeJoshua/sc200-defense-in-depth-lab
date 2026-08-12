@@ -1,0 +1,30 @@
+// Scenario 3 — Encoded PowerShell Execution Detection
+// Tactic: Execution (T1059.001 - PowerShell), Ingress Tool Transfer (T1105)
+//
+// Detects powershell.exe launched with encoding/download-cradle indicators.
+// Attribution is pulled from the payload-level User field (EventData), not
+// the envelope-level UserName column, which frequently reports SYSTEM
+// regardless of the actual acting user.
+//
+// NOTE: "contains" is used for "-enc" deliberately, not "has" — KQL's
+// indexed has/has_any operators tokenize on punctuation boundaries and can
+// unreliably match short, hyphen-prefixed strings. Correctness was
+// prioritized over the query editor's performance suggestion here.
+
+Event
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 1
+| where EventData has "powershell.exe"
+| where EventData contains "-enc" or EventData has_any ("FromBase64String", "DownloadString", "IEX")
+| extend ActualUser = extract(@'<Data Name="User">([^<]+)</Data>', 1, EventData)
+| extend CommandLine = extract(@'<Data Name="CommandLine">([^<]+)</Data>', 1, EventData)
+| extend ParentImage = extract(@'<Data Name="ParentImage">([^<]+)</Data>', 1, EventData)
+| project TimeGenerated, Computer, ActualUser, CommandLine, ParentImage
+
+// Entity mapping:
+//   Account -> ActualUser
+//   Host    -> Computer
+//
+// Rule scheduling:
+//   Run every: 5 minutes
+//   Lookup data from the last: 5 minutes

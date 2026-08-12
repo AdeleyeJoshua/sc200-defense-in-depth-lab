@@ -1,0 +1,42 @@
+// Scenario C — SOAR Response to VM Logon by a Previously-Sprayed Account
+// Tactic: Lateral Movement (T1021.001 - Remote Desktop Protocol)
+//
+// Correlates a prior password-spray pattern (by IP) to the specific account
+// that succeeded, then checks whether that same account subsequently reaches
+// the VM's sign-in application within a near-real-time window.
+//
+// NOTE: AppId below is specific to this tenant's VM sign-in application and
+// was confirmed directly against real sign-in telemetry before use. Do not
+// reuse this GUID in another tenant without verifying it first.
+
+let sprayIPs =
+    SigninLogs
+    | where TimeGenerated > ago(2h)
+    | summarize Failed=countif(ResultType != "0"),
+                Success=countif(ResultType == "0")
+              by IPAddress
+    | where Failed >= 5 and Success >= 1
+    | distinct IPAddress;
+let compromisedAccounts =
+    SigninLogs
+    | where TimeGenerated > ago(2h)
+    | where IPAddress in (sprayIPs)
+    | where ResultType == "0"
+    | distinct UserPrincipalName;
+SigninLogs
+| where TimeGenerated > ago(5m)
+| where ResultType == "0"
+| where AppId == "38aa3b87-a06d-4817-b275-7a316988d93b"
+| where UserPrincipalName in (compromisedAccounts)
+| project TimeGenerated, UserPrincipalName, IPAddress, Location, AppDisplayName, AppId, ResultType
+
+// Entity mapping:
+//   Account -> UserPrincipalName
+//   IP      -> IPAddress
+//
+// Rule scheduling:
+//   Run every: 5 minutes
+//   Lookup data from the last: 2 hours
+//   (must be 2h, not 5m — the outer lookup window gates data visibility
+//   for the entire query, including the sprayIPs/compromisedAccounts
+//   correlation logic, not just the final alerting condition)

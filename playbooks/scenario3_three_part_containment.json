@@ -1,0 +1,243 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+            "Microsoft_Sentinel_incident": {
+                "type": "ApiConnectionWebhook",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                        }
+                    },
+                    "body": {
+                        "callback_url": "@{listCallbackUrl()}"
+                    },
+                    "path": "/incident-creation"
+                }
+            }
+        },
+        "actions": {
+            "Entities_-_Get_Hosts": {
+                "runAfter": {},
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuresentinel-1']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                    "path": "/entities/host"
+                }
+            },
+            "Allow_Home_IP": {
+                "runAfter": {
+                    "Entities_-_Get_Accounts": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "https://management.azure.com/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-sc200-v3/providers/Microsoft.Network/networkSecurityGroups/CORPS26-nsg/securityRules/Allow-Home-IP?api-version=2023-05-01",
+                    "method": "PUT",
+                    "body": {
+                        "properties": {
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "*",
+                            "sourceAddressPrefix": "<SOC_IP>",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 100,
+                            "direction": "Inbound"
+                        }
+                    },
+                    "authentication": {
+                        "type": "ManagedServiceIdentity"
+                    }
+                },
+                "runtimeConfiguration": {
+                    "contentTransfer": {
+                        "transferMode": "Chunked"
+                    }
+                }
+            },
+            "Deny_All": {
+                "runAfter": {
+                    "Allow_Home_IP": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "https://management.azure.com/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-sc200-v3/providers/Microsoft.Network/networkSecurityGroups/CORPS26-nsg/securityRules/Deny-All-Isolation?api-version=2023-05-01",
+                    "method": "PUT",
+                    "body": {
+                        "properties": {
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "*",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Deny",
+                            "priority": 110,
+                            "direction": "Inbound"
+                        }
+                    },
+                    "authentication": {
+                        "type": "ManagedServiceIdentity"
+                    }
+                },
+                "runtimeConfiguration": {
+                    "contentTransfer": {
+                        "transferMode": "Chunked"
+                    }
+                }
+            },
+            "For_each": {
+                "foreach": "@body('Entities_-_Get_Hosts')?['Hosts']",
+                "actions": {
+                    "For_each_2": {
+                        "foreach": "@body('Entities_-_Get_Accounts')?['Accounts']",
+                        "actions": {
+                            "Evict_Active_Session": {
+                                "type": "Http",
+                                "inputs": {
+                                    "uri": "https://management.azure.com/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-sc200-v3/providers/Microsoft.Compute/virtualMachines/@{items('For_each')?['HostName']}/runCommand?api-version=2023-07-01",
+                                    "method": "POST",
+                                    "body": {
+                                        "commandId": "RunPowerShellScript",
+                                        "script": [
+                                            "$rawName = '@{item()?['Name']}'",
+                                            "$cleanName = $rawName -replace '.*\\\\', ''",
+                                            "$sessions = query session",
+                                            "foreach ($line in $sessions) {",
+                                            "    if ($line -match ('\\s+' + $cleanName + '\\s+(\\d+)\\s+')) {",
+                                            "        logoff $Matches[1]",
+                                            "    }",
+                                            "}"
+                                        ]
+                                    },
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    }
+                                },
+                                "runtimeConfiguration": {
+                                    "contentTransfer": {
+                                        "transferMode": "Chunked"
+                                    }
+                                }
+                            },
+                            "Add_comment_to_incident_(V3)": {
+                                "runAfter": {
+                                    "Evict_Active_Session": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "ApiConnection",
+                                "inputs": {
+                                    "host": {
+                                        "connection": {
+                                            "name": "@parameters('$connections')['azuresentinel-1']['connectionId']"
+                                        }
+                                    },
+                                    "method": "post",
+                                    "body": {
+                                        "incidentArmId": "@triggerBody()?['object']?['id']",
+                                        "message": "<p class=\"editor-paragraph\">Automated response executed. NSG isolated (Priority 100/110). Active @{item()?['Name']} session forcibly terminated via RunCommand.</p>"
+                                    },
+                                    "path": "/Incidents/Comment"
+                                }
+                            }
+                        },
+                        "type": "Foreach"
+                    }
+                },
+                "runAfter": {
+                    "Deny_All": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Foreach"
+            },
+            "Update_incident": {
+                "runAfter": {
+                    "For_each": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuresentinel-1']['connectionId']"
+                        }
+                    },
+                    "method": "put",
+                    "body": {
+                        "incidentArmId": "@triggerBody()?['object']?['id']",
+                        "tagsToAdd": {
+                            "TagsToAdd": [
+                                {
+                                    "Tag": "Auto-Contained-3Part"
+                                }
+                            ]
+                        }
+                    },
+                    "path": "/Incidents"
+                }
+            },
+            "Entities_-_Get_Accounts": {
+                "runAfter": {
+                    "Entities_-_Get_Hosts": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuresentinel-1']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                    "path": "/entities/account"
+                }
+            }
+        },
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "type": "Object",
+                "defaultValue": {}
+            }
+        }
+    },
+    "parameters": {
+        "$connections": {
+            "type": "Object",
+            "value": {
+                "azuresentinel": {
+                    "id": "/subscriptions/<SUBSCRIPTION_ID>/providers/Microsoft.Web/locations/southafricanorth/managedApis/azuresentinel",
+                    "connectionId": "/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-sc200-v3/providers/Microsoft.Web/connections/azuresentinel-SOAR-3Part-Containment",
+                    "connectionName": "azuresentinel-SOAR-3Part-Containment",
+                    "connectionProperties": {
+                        "authentication": {
+                            "type": "ManagedServiceIdentity"
+                        }
+                    }
+                },
+                "azuresentinel-1": {
+                    "id": "/subscriptions/<SUBSCRIPTION_ID>/providers/Microsoft.Web/locations/southafricanorth/managedApis/azuresentinel",
+                    "connectionId": "/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-sc200-v3/providers/Microsoft.Web/connections/azuresentinel-1",
+                    "connectionName": "azuresentinel-1",
+                    "connectionProperties": {}
+                }
+            }
+        }
+    }
+}
